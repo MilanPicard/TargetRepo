@@ -1,0 +1,520 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r load data}
+library(tidyverse)
+library(igraph)
+library(glmnet)
+library(data.table)
+
+source("data/utils.R")
+
+Network = graph_from_data_frame(read_csv("data/Network_edge_list.csv"))
+TT = read_csv("data/Positive_targets.csv")$Positive_targets
+
+# Load extracted features
+Target = readRDS("CLI_mat.rds")[[2]][[1]]
+SHP_mat = readRDS("SHP_mat.rds")[, -1] %>% `colnames<-`(paste0("SHP_", colnames(.)))
+SHP_inv_mat = readRDS("SHP_inv_mat.rds")[, -1] %>% `colnames<-`(paste0("SHP_inv_", colnames(.)))
+SHP_ind_mat = readRDS("SHP_ind_mat.rds")[, -1] %>% `colnames<-`(paste0("SHP_ind_", colnames(.)))
+RWR_mat = readRDS("RWR_mat.rds")[, -1] %>% `colnames<-`(paste0("RWR_", colnames(.)))
+RWR_inv_mat = readRDS("RWR_inv_mat.rds")[, -1] %>% `colnames<-`(paste0("RWR_inv_", colnames(.)))
+RWR_ind_mat = readRDS("RWR_ind_mat.rds")[, -1] %>% `colnames<-`(paste0("RWR_ind_", colnames(.)))
+TOP_mat = readRDS("TOP_mat.rds")[, -1]
+CLI_mat = readRDS("CLI_mat.rds")[[2]][, -1]
+CLU_mat = readRDS("CLU_mat.rds")[, -1]
+SIP_mat = readRDS("SIP_mat.rds")[, -1] %>% `colnames<-`(paste0("Signature_prot_", colnames(.)))
+SIG_mat = readRDS("SIG_mat.rds")[, -1] %>% `colnames<-`(paste0("Signature_gene_", colnames(.)))
+RAN_mat = readRDS("RAN_mat.rds")[[1]][, -1]
+RAN_TOP_mat = readRDS("RAN_TOP_mat.rds")[[1]][, -1]
+```
+
+# data spliting
+```{r Split data and remove missing values}
+# Get all potential therapeutic targets from PHAROS that are tclin or tchem
+Potential_targets = read_csv("data/pharos_all_targets.csv")$UniProt %>% paste0("Prot_", .)
+
+# Targets considered positive
+positive_class = intersect_all(TT, Potential_targets, vnames(Network, type = "Prot_"))
+# Targets considered negative
+negative_class = intersect(setdiff(Potential_targets, TT), vnames(Network, type = "Prot_"))
+
+instances_to_keep = c(positive_class, negative_class)
+
+set.seed(123)
+train_index = caret::createDataPartition(y = instances_to_keep %in% positive_class, times = 1, p = 0.8, list = 1)[[1]]
+Training_targets = instances_to_keep[train_index]
+Test_targets = instances_to_keep[-train_index]
+
+# nbr(Training_targets) #2034
+# nbr(Test_targets) #508
+
+# Separate into training dataset
+SHP_mat_train = SHP_mat[Target %in% Training_targets, ]
+SHP_inv_mat_train = SHP_inv_mat[Target %in% Training_targets, ]
+SHP_ind_mat_train = SHP_ind_mat[Target %in% Training_targets, ]
+RWR_mat_train = RWR_mat[Target %in% Training_targets, ]
+RWR_inv_mat_train = RWR_inv_mat[Target %in% Training_targets, ]
+RWR_ind_mat_train = RWR_ind_mat[Target %in% Training_targets, ]
+TOP_mat_train = TOP_mat[Target %in% Training_targets, ]
+CLI_mat_train = CLI_mat[Target %in% Training_targets, ]
+CLU_mat_train = CLU_mat[Target %in% Training_targets, ]
+SIP_mat_train = SIP_mat[Target %in% Training_targets, ]
+SIG_mat_train = SIG_mat[Target %in% Training_targets, ]
+RAN_mat_train = RAN_mat[Target %in% Training_targets, ]
+RAN_TOP_mat_train = RAN_TOP_mat[Target %in% Training_targets, ]
+
+# Separate into test dataset
+SHP_mat_test = SHP_mat[Target %in% Test_targets, ]
+SHP_inv_mat_test = SHP_inv_mat[Target %in% Test_targets, ]
+SHP_ind_mat_test = SHP_ind_mat[Target %in% Test_targets, ]
+RWR_mat_test = RWR_mat[Target %in% Test_targets, ]
+RWR_inv_mat_test = RWR_inv_mat[Target %in% Test_targets, ]
+RWR_ind_mat_test = RWR_ind_mat[Target %in% Test_targets, ]
+TOP_mat_test = TOP_mat[Target %in% Test_targets, ]
+CLI_mat_test = CLI_mat[Target %in% Test_targets, ]
+CLU_mat_test = CLU_mat[Target %in% Test_targets, ]
+SIP_mat_test = SIP_mat[Target %in% Test_targets, ]
+SIG_mat_test = SIG_mat[Target %in% Test_targets, ]
+RAN_mat_test = RAN_mat[Target %in% Test_targets, ]
+RAN_TOP_mat_test = RAN_TOP_mat[Target %in% Test_targets, ]
+
+save(SHP_mat_test,SHP_inv_mat_test,SHP_ind_mat_test,RWR_mat_test,RWR_inv_mat_test,RWR_ind_mat_test,TOP_mat_test,CLI_mat_test,CLU_mat_test,SIP_mat_test,SIG_mat_test,RAN_mat_test,RAN_TOP_mat_test, file = "XXX_mat_test.rdata")
+
+
+# Remove NAs from the data by removing rows or columns
+rm_Nas = function(df){
+  df = data.frame(Target = Training_targets, df)
+  # df = df[!(rowSums(is.na(df)) >= 0.3*ncol(df)), ] #  Remove columns with lots of NAs
+  # df = df[complete.cases(df), ] # Remove all rows that still contains NAs
+  df = df[!(rowSums(is.na(df)) >= 0.3*ncol(df)), ] 
+  df = df[, colSums(is.na(df)) == 0]
+  return(df)
+}
+
+
+SHP_mat_without_NA =     rm_Nas(df = SHP_mat_train)
+SHP_inv_mat_without_NA = rm_Nas(df = SHP_inv_mat_train)
+SHP_ind_mat_without_NA = rm_Nas(df = SHP_ind_mat_train)
+RWR_mat_without_NA =     rm_Nas(df = RWR_mat_train)
+RWR_inv_mat_without_NA = rm_Nas(df = RWR_inv_mat_train)
+RWR_ind_mat_without_NA = rm_Nas(df = RWR_ind_mat_train)
+TOP_mat_without_NA =     rm_Nas(df = TOP_mat_train)
+CLI_mat_without_NA =     rm_Nas(df = CLI_mat_train)
+CLU_mat_without_NA =     rm_Nas(df = CLU_mat_train)
+SIP_mat_without_NA =     rm_Nas(df = SIP_mat_train)
+SIG_mat_without_NA =     rm_Nas(df = SIG_mat_train)
+
+# Separate random results into their different categories
+RAN_mat_Clust_ = RAN_mat_train[, str_detect(names(RAN_mat_train), "Fake_Clust_")]
+RAN_mat_signature_ = RAN_mat_train[, str_detect(names(RAN_mat_train), "Fake_signature_")]
+RAN_mat_interaction_RWR_ = RAN_mat_train[, str_detect(names(RAN_mat_train), "Fake_interaction_RWR_")]
+RAN_mat_interaction_SHP_ = RAN_mat_train[, str_detect(names(RAN_mat_train), "Fake_interaction_SHP_")]
+RAN_mat_random_RWR_ = RAN_mat_train[, str_detect(names(RAN_mat_train), "Fake_random_RWR_")]
+RAN_mat_random_SHP_ = RAN_mat_train[, str_detect(names(RAN_mat_train), "Fake_random_SHP_")]
+
+RAN_mat_Clust_without_NA = rm_Nas(df = RAN_mat_Clust_)
+RAN_mat_signature_without_NA = rm_Nas(df = RAN_mat_signature_)
+RAN_mat_interaction_RWR_without_NA = rm_Nas(df = RAN_mat_interaction_RWR_)
+RAN_mat_interaction_SHP_without_NA = rm_Nas(df = RAN_mat_interaction_SHP_)
+RAN_mat_random_RWR_without_NA = rm_Nas(df = RAN_mat_random_RWR_)
+RAN_mat_random_SHP_without_NA = rm_Nas(df = RAN_mat_random_SHP_)
+
+RAN_TOP_mat_without_NA = rm_Nas(df = RAN_TOP_mat_train)
+
+intersect_all = function (a, b, ...) {
+    Reduce(intersect, list(a, b, ...))
+}
+
+Training_targets_NA = intersect_all(SHP_mat_without_NA$Target,
+              SHP_inv_mat_without_NA$Target,
+              SHP_ind_mat_without_NA$Target,
+              RWR_mat_without_NA$Target,
+              RWR_inv_mat_without_NA$Target,
+              RWR_ind_mat_without_NA$Target,
+              TOP_mat_without_NA$Target,
+              CLI_mat_without_NA$Target,
+              CLU_mat_without_NA$Target,
+              SIP_mat_without_NA$Target,
+              SIG_mat_without_NA$Target,
+              RAN_mat_Clust_without_NA$Target,
+              RAN_mat_signature_without_NA$Target,
+              RAN_mat_interaction_RWR_without_NA$Target,
+              RAN_mat_interaction_SHP_without_NA$Target,
+              RAN_mat_random_RWR_without_NA$Target,
+              RAN_mat_random_SHP_without_NA$Target,
+              RAN_TOP_mat_without_NA$Target)
+
+SHP_mat_without_NA = SHP_mat_without_NA %>% filter(Target %in% Training_targets_NA)
+SHP_inv_mat_without_NA = SHP_inv_mat_without_NA %>% filter(Target %in% Training_targets_NA)
+SHP_ind_mat_without_NA = SHP_ind_mat_without_NA %>% filter(Target %in% Training_targets_NA)
+RWR_mat_without_NA = RWR_mat_without_NA %>% filter(Target %in% Training_targets_NA)
+RWR_inv_mat_without_NA = RWR_inv_mat_without_NA %>% filter(Target %in% Training_targets_NA)
+RWR_ind_mat_without_NA = RWR_ind_mat_without_NA %>% filter(Target %in% Training_targets_NA)
+TOP_mat_without_NA = TOP_mat_without_NA %>% filter(Target %in% Training_targets_NA)
+CLI_mat_without_NA = CLI_mat_without_NA %>% filter(Target %in% Training_targets_NA)
+CLU_mat_without_NA = CLU_mat_without_NA %>% filter(Target %in% Training_targets_NA)
+SIP_mat_without_NA = SIP_mat_without_NA %>% filter(Target %in% Training_targets_NA)
+SIG_mat_without_NA = SIG_mat_without_NA %>% filter(Target %in% Training_targets_NA)
+RAN_mat_Clust_without_NA = RAN_mat_Clust_without_NA %>% filter(Target %in% Training_targets_NA)
+RAN_mat_signature_without_NA = RAN_mat_signature_without_NA %>% filter(Target %in% Training_targets_NA)
+RAN_mat_interaction_RWR_without_NA = RAN_mat_interaction_RWR_without_NA %>% filter(Target %in% Training_targets_NA)
+RAN_mat_interaction_SHP_without_NA = RAN_mat_interaction_SHP_without_NA %>% filter(Target %in% Training_targets_NA)
+RAN_mat_random_RWR_without_NA = RAN_mat_random_RWR_without_NA %>% filter(Target %in% Training_targets_NA)
+RAN_mat_random_SHP_without_NA = RAN_mat_random_SHP_without_NA %>% filter(Target %in% Training_targets_NA)
+RAN_TOP_mat_without_NA = RAN_TOP_mat_without_NA %>% filter(Target %in% Training_targets_NA)
+
+
+save(Training_targets, Training_targets_NA, Test_targets, positive_class, negative_class, instances_to_keep, file = "split_information.rds")
+
+```
+
+# Feature selection
+```{r Information gain feature selection}
+boot_inf_gain = function(df, Training_target, boot_index, TT){
+  results = list()
+  for(i in seq_along(boot_index)){
+    print(i)
+    add(results, FS_information_gain(df = df[boot_index[[i]], ], class = (Training_target[boot_index[[i]]] %in% TT)))
+  }
+  return(results)
+}
+
+FS_information_gain = function(df, class){
+  df = data.frame(class = as.factor(class), df)
+  chunksy = chunks(2:ncol(df), round((ncol(df)-1)/10))
+  Results = list()
+  for(chunk in chunksy){
+    # Remove all variables that have only one value.
+    add(Results, stack(RWeka::InfoGainAttributeEval(class ~ ., df[, c(1,chunk)], na.action = "na.omit")))
+  }
+  return(setNames(do.call(rbind, Results), c("infgain", "feature")) %>% arrange(desc(infgain)) %>% mutate(infgain = signif(infgain, 4)))
+}
+
+get_bootstrap_index = function(class, repetition){
+  list_index = list()
+  for(i in 1:repetition){
+    rows = 1:nbr(class)
+    classes = unique(class)
+    row_class1 = rows[class == classes[1]]
+    row_class2 = rows[class == classes[2]]
+    
+    new_row_class1 = sample(x = row_class1, size = nbr(row_class1), replace = TRUE)
+    new_row_class2 = sample(x = row_class2, size = nbr(row_class2), replace = TRUE)
+    
+    new_rows = c(new_row_class1, new_row_class2)
+    add(list_index, new_rows)
+  }
+  names(list_index) = paste0("Rep_", 1:nbr(list_index))
+  return(list_index)
+}
+
+process_inf_gain = function(infgain_results){
+  names(infgain_results) = paste0("Rep_", 1:nbr(infgain_results))
+  # Mean information gain across repetition
+  Summary_infgain_rep = bind_rows(infgain_results, .id = "DataFrame")
+  Summary_infgain_rep = pivot_wider(Summary_infgain_rep, names_from = DataFrame, values_from = infgain)
+  Summary_infgain_rep = Summary_infgain_rep %>% mutate(RowMean = rowMeans(dplyr::select(., starts_with("Rep_")), na.rm = TRUE)) %>% 
+    dplyr::select(feature, RowMean, everything())
+  print(table(Summary_infgain_rep$RowMean == 0))
+  return(Summary_infgain_rep)
+}
+
+
+set.seed(123)
+boot_index = get_bootstrap_index(class = Training_targets_NA %in% positive_class, repetition = 15)
+saveRDS(boot_index, "boot_index.rds")
+
+
+boot_infgain_SHP =     boot_inf_gain(df = SHP_mat_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_SHP_inv = boot_inf_gain(df = SHP_inv_mat_without_NA[, -1], Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_SHP_ind = boot_inf_gain(df = SHP_ind_mat_without_NA[, -1], Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_RWR =     boot_inf_gain(df = RWR_mat_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_RWR_inv = boot_inf_gain(df = RWR_inv_mat_without_NA[, -1], Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_RWR_ind = boot_inf_gain(df = RWR_ind_mat_without_NA[, -1], Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+
+TOP_mat_without_NA[, 5] = TOP_mat_without_NA[, 5]*1e6 # Will not change the results, but values too low cannot be handle by the information gain function
+boot_infgain_TOP =     boot_inf_gain(df = TOP_mat_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+
+boot_infgain_CLI =     boot_inf_gain(df = CLI_mat_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_CLU =     boot_inf_gain(df = CLU_mat_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_SIP =     boot_inf_gain(df = SIP_mat_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_SIG =     boot_inf_gain(df = SIG_mat_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_RAN_TOP = boot_inf_gain(df = RAN_TOP_mat_without_NA[, -1], Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+
+boot_infgain_RAN_Clust =     boot_inf_gain(df = RAN_mat_Clust_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_RAN_signature =     boot_inf_gain(df = RAN_mat_signature_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_RAN_interaction_RWR =     boot_inf_gain(df = RAN_mat_interaction_RWR_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_RAN_interaction_SHP =     boot_inf_gain(df = RAN_mat_interaction_SHP_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_RAN_random_RWR =     boot_inf_gain(df = RAN_mat_random_RWR_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+boot_infgain_RAN_random_SHP =     boot_inf_gain(df = RAN_mat_random_SHP_without_NA[, -1],     Training_target = Training_targets_NA, boot_index = boot_index, TT = positive_class)
+
+infgain_processed_SHP = process_inf_gain(boot_infgain_SHP)
+infgain_processed_SHP_inv = process_inf_gain(boot_infgain_SHP_inv)
+infgain_processed_SHP_ind = process_inf_gain(boot_infgain_SHP_ind)
+infgain_processed_RWR = process_inf_gain(boot_infgain_RWR)
+infgain_processed_RWR_inv = process_inf_gain(boot_infgain_RWR_inv)
+infgain_processed_RWR_ind = process_inf_gain(boot_infgain_RWR_ind)
+infgain_processed_CLI = process_inf_gain(boot_infgain_CLI)
+infgain_processed_CLU = process_inf_gain(boot_infgain_CLU)
+infgain_processed_SIP = process_inf_gain(boot_infgain_SIP)
+infgain_processed_SIG = process_inf_gain(boot_infgain_SIG)
+infgain_processed_TOP = process_inf_gain(boot_infgain_TOP)
+infgain_processed_RAN_TOP = process_inf_gain(boot_infgain_RAN_TOP)
+infgain_processed_RAN_Clust = process_inf_gain(boot_infgain_RAN_Clust)
+infgain_processed_RAN_signature = process_inf_gain(boot_infgain_RAN_signature)
+infgain_processed_RAN_interaction_RWR = process_inf_gain(boot_infgain_RAN_interaction_RWR)
+infgain_processed_RAN_interaction_SHP = process_inf_gain(boot_infgain_RAN_interaction_SHP)
+infgain_processed_RAN_random_RWR = process_inf_gain(boot_infgain_RAN_random_RWR)
+infgain_processed_RAN_random_SHP = process_inf_gain(boot_infgain_RAN_random_SHP)
+
+calc_outlier_cutoff = function(distribion){
+  distribion[distribion > quantile(distribion, probs = 0.75) + 1.5*IQR(distribion)] %>% min
+}
+
+Distribution_Fake_Clust = infgain_processed_RAN_Clust %>% filter(str_detect(feature, "Fake_Clust_") & RowMean != 0) %>% pull(RowMean)
+Distribution_Fake_signature = infgain_processed_RAN_signature %>% filter(str_detect(feature, "Fake_signature_") & RowMean != 0) %>% pull(RowMean)
+Distribution_Fake_interaction_RWR = infgain_processed_RAN_interaction_RWR %>% filter(str_detect(feature, "Fake_interaction_RWR_") & RowMean != 0) %>% pull(RowMean)
+Distribution_Fake_interaction_SHP = infgain_processed_RAN_interaction_SHP %>% filter(str_detect(feature, "Fake_interaction_SHP_") & RowMean != 0) %>% pull(RowMean)
+Distribution_Fake_random_RWR = infgain_processed_RAN_random_RWR %>% filter(str_detect(feature, "Fake_random_RWR_") & RowMean != 0) %>% pull(RowMean)
+Distribution_Fake_random_SHP = infgain_processed_RAN_random_SHP %>% filter(str_detect(feature, "Fake_random_SHP_") & RowMean != 0) %>% pull(RowMean)
+Distribution_Fake_interaction_TOP = infgain_processed_RAN_TOP %>% filter(str_detect(feature, "Fake_interaction_") & RowMean != 0) %>% pull(RowMean)
+Distribution_Fake_random_TOP = infgain_processed_RAN_TOP %>% filter(str_detect(feature, "Fake_random_") & RowMean != 0) %>% pull(RowMean)
+
+Cutoff_Fake_Clust = calc_outlier_cutoff(Distribution_Fake_Clust)
+Cutoff_Fake_signature = calc_outlier_cutoff(Distribution_Fake_signature)
+Cutoff_Fake_interaction_RWR = calc_outlier_cutoff(Distribution_Fake_interaction_RWR)
+Cutoff_Fake_interaction_SHP = calc_outlier_cutoff(Distribution_Fake_interaction_SHP)
+Cutoff_Fake_interaction_TOP = calc_outlier_cutoff(Distribution_Fake_interaction_TOP)
+
+Features_IG_filtered_RWR = infgain_processed_RWR %>% filter(RowMean >= Cutoff_Fake_interaction_RWR) %>% pull(feature) %>% as.vector()
+Features_IG_filtered_RWR_inv = infgain_processed_RWR_inv %>% filter(RowMean >= Cutoff_Fake_interaction_RWR) %>% pull(feature) %>% as.vector()
+Features_IG_filtered_RWR_ind = infgain_processed_RWR_ind %>% filter(RowMean >= Cutoff_Fake_interaction_RWR) %>% pull(feature) %>% as.vector()
+Features_IG_filtered_SHP = infgain_processed_SHP %>% filter(RowMean >= Cutoff_Fake_interaction_SHP) %>% pull(feature) %>% as.vector()
+Features_IG_filtered_SHP_inv = infgain_processed_SHP_inv %>% filter(RowMean >= Cutoff_Fake_interaction_SHP) %>% pull(feature) %>% as.vector()
+Features_IG_filtered_SHP_ind = infgain_processed_SHP_ind %>% filter(RowMean >= Cutoff_Fake_interaction_SHP) %>% pull(feature) %>% as.vector()
+Features_IG_filtered_TOP = infgain_processed_TOP %>% filter(RowMean >= Cutoff_Fake_interaction_TOP) %>% pull(feature) %>% as.vector()
+Features_IG_filtered_CLI = infgain_processed_CLI %>% filter(RowMean >= Cutoff_Fake_Clust) %>% pull(feature) %>% as.vector()
+Features_IG_filtered_CLU = infgain_processed_CLU %>% filter(RowMean >= Cutoff_Fake_Clust) %>% pull(feature) %>% as.vector()
+Features_IG_filtered_SIP = infgain_processed_SIP %>% filter(RowMean >= Cutoff_Fake_signature) %>% pull(feature) %>% as.vector()
+Features_IG_filtered_SIG = infgain_processed_SIG %>% filter(RowMean >= Cutoff_Fake_signature) %>% pull(feature) %>% as.vector()
+
+```
+
+```{r correlation feature selection}
+# Only get features with high information gain
+RWR_mat_filtered = RWR_mat_without_NA[, Features_IG_filtered_RWR]
+RWR_inv_mat_filtered = RWR_inv_mat_without_NA[, Features_IG_filtered_RWR_inv]
+RWR_ind_mat_filtered = RWR_ind_mat_without_NA[, Features_IG_filtered_RWR_ind]
+SHP_mat_filtered = SHP_mat_without_NA[, Features_IG_filtered_SHP]
+SHP_inv_mat_filtered = SHP_inv_mat_without_NA[, Features_IG_filtered_SHP_inv]
+SHP_ind_mat_filtered = SHP_ind_mat_without_NA[, Features_IG_filtered_SHP_ind]
+TOP_mat_filtered = TOP_mat_without_NA[, Features_IG_filtered_TOP]
+CLI_mat_filtered = CLI_mat_without_NA[, Features_IG_filtered_CLI]
+CLU_mat_filtered = CLU_mat_without_NA[, Features_IG_filtered_CLU]
+SIP_mat_filtered = SIP_mat_without_NA[, Features_IG_filtered_SIP]
+SIG_mat_filtered = SIG_mat_without_NA[, Features_IG_filtered_SIG]
+
+# Determine correlation of each dataset
+RWR_mat_filtered_cor = cor(RWR_mat_filtered)
+RWR_inv_mat_filtered_cor = cor(RWR_inv_mat_filtered)
+RWR_ind_mat_filtered_cor = cor(RWR_ind_mat_filtered)
+SHP_mat_filtered_cor = cor(SHP_mat_filtered)
+SHP_inv_mat_filtered_cor = cor(SHP_inv_mat_filtered)
+SHP_ind_mat_filtered_cor = cor(SHP_ind_mat_filtered)
+TOP_mat_filtered_cor = cor(TOP_mat_filtered)
+CLI_mat_filtered_cor = cor(CLI_mat_filtered)
+CLU_mat_filtered_cor = cor(CLU_mat_filtered)
+SIP_mat_filtered_cor = cor(SIP_mat_filtered)
+SIG_mat_filtered_cor = cor(SIG_mat_filtered)
+
+# Find redundant features
+RWR_cor_feature_to_remove = caret::findCorrelation(x = RWR_mat_filtered_cor, cutoff = 0.95)
+RWR_inv_cor_feature_to_remove = caret::findCorrelation(x = RWR_inv_mat_filtered_cor, cutoff = 0.95)
+RWR_ind_cor_feature_to_remove = caret::findCorrelation(x = RWR_ind_mat_filtered_cor, cutoff = 0.95)
+SHP_cor_feature_to_remove = caret::findCorrelation(x = SHP_mat_filtered_cor, cutoff = 0.95)
+SHP_inv_cor_feature_to_remove = caret::findCorrelation(x = SHP_inv_mat_filtered_cor, cutoff = 0.95)
+SHP_ind_cor_feature_to_remove = caret::findCorrelation(x = SHP_ind_mat_filtered_cor, cutoff = 0.95)
+TOP_cor_feature_to_remove = caret::findCorrelation(x = TOP_mat_filtered_cor, cutoff = 0.95)
+CLI_cor_feature_to_remove = caret::findCorrelation(x = CLI_mat_filtered_cor, cutoff = 0.95)
+CLU_cor_feature_to_remove = caret::findCorrelation(x = CLU_mat_filtered_cor, cutoff = 0.95)
+SIP_cor_feature_to_remove = caret::findCorrelation(x = SIP_mat_filtered_cor, cutoff = 0.95)
+SIG_cor_feature_to_remove = caret::findCorrelation(x = SIG_mat_filtered_cor, cutoff = 0.95)
+
+# Get only non redundant with high information gain features
+RWR_mat_final = RWR_mat_filtered[, -RWR_cor_feature_to_remove]
+RWR_inv_mat_final = RWR_inv_mat_filtered[, -RWR_inv_cor_feature_to_remove]
+RWR_ind_mat_final = RWR_ind_mat_filtered[, -RWR_ind_cor_feature_to_remove]
+SHP_mat_final = SHP_mat_filtered[, -SHP_cor_feature_to_remove]
+SHP_inv_mat_final = SHP_inv_mat_filtered[, -SHP_inv_cor_feature_to_remove]
+SHP_ind_mat_final = SHP_ind_mat_filtered[, -SHP_ind_cor_feature_to_remove]
+TOP_mat_final = TOP_mat_filtered[, -TOP_cor_feature_to_remove]
+CLI_mat_final = CLI_mat_filtered[, -CLI_cor_feature_to_remove]
+CLU_mat_final = CLU_mat_filtered[, -CLU_cor_feature_to_remove]
+SIP_mat_final = SIP_mat_filtered[, -SIP_cor_feature_to_remove]
+SIG_mat_final = SIG_mat_filtered[, -SIG_cor_feature_to_remove]
+
+save(RWR_mat_final,RWR_inv_mat_final,RWR_ind_mat_final,SHP_mat_final,SHP_inv_mat_final,SHP_ind_mat_final,TOP_mat_final,CLI_mat_final,CLU_mat_final,SIP_mat_final,SIG_mat_final, file = "XXX_mat_final.rdata")
+
+```
+
+```{r Ada Lasso feature selection}
+select_features_ADA = function(Dataset, Label, weights = NULL, nfolds = 10, cv = 3, nCores = 1){
+  require(glmnet)
+  require(caret)
+  
+  run_lasso = function(index, Dataset, Label, weights, nfolds, i){
+    # Launch models
+    label = Label[index]
+    if(!is.null(weights)){
+      weights = ifelse(label == 1, sum(label == 0)/nbr(label), sum(label == 1)/nbr(label))
+    }
+    message(paste0("Calculating ridge weight for adaptive LASSO rep:", i))
+    cv_ridge = cv.glmnet(x = as.matrix(Dataset[index, ]), y = label, weights = weights, alpha = 0, nfolds = nfolds, family = "binomial", type.measure = "auc")
+    ada_weights = 1/abs(matrix(coef(cv_ridge, s=cv_ridge$lambda.min)[, 1][-1]))
+    
+    message(paste0("Calculating LASSo with cross validation ", i, "  rep"))
+    cv.lasso = cv.glmnet(x = as.matrix(Dataset[index, ]), y = label, weights = weights, alpha = 1, nfolds = nfolds, family = "binomial", type.measure = "auc", penalty.factor = ada_weights)
+    
+    coef <- coef(cv.lasso, s='lambda.1se')
+    features = rownames(coef)[-1][coef[, 1][-1] != 0]
+    return(features)
+  }
+  
+  trainIndex <- createDataPartition(Label, p = .8, list = TRUE, times = cv)
+  Results = parallel::mclapply(seq_along(trainIndex), function(i) {print(i) ; run_lasso(index = trainIndex[[i]], Dataset = Dataset, Label = Label, weights = weights, nfolds = nfolds, i = i)}, mc.cores = nCores)
+  
+  names(Results) = paste0("Rep_", 1:length(trainIndex))
+  
+  return(Results)
+}
+
+downsampling_index = function(class, repetition){
+  list_index = list()
+  for(i in 1:repetition){
+    rows = 1:nbr(class)
+    classes = unique(class)
+    row_class1 = rows[class == classes[1]]
+    row_class2 = rows[class == classes[2]]
+    
+    # take the number of observation in the minority class
+    min_class = min(c(nbr(row_class1), nbr(row_class2)))
+    # Take only 95% to add a little variability and increase robustness.
+    min_class = round(min_class*.9)
+    
+    
+    new_row_class1 = sample(x = row_class1, size = min_class, replace = FALSE)
+    new_row_class2 = sample(x = row_class2, size = min_class, replace = FALSE)
+    
+    new_rows = c(new_row_class1, new_row_class2)
+    add(list_index, new_rows)
+  }
+  names(list_index) = paste0("Rep_", 1:nbr(list_index))
+  return(list_index)
+}
+
+Features_ADA_RWR =    select_features_ADA(Dataset = RWR_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), nfolds = 10, cv = 80, nCores = 40)
+Features_ADA_RWR_inv =select_features_ADA(Dataset = RWR_inv_mat_final, Label = as.factor(Training_targets_NA %in% positive_class), nfolds = 10, cv = 80, nCores = 40)
+Features_ADA_RWR_ind =select_features_ADA(Dataset = RWR_ind_mat_final, Label = as.factor(Training_targets_NA %in% positive_class), nfolds = 10, cv = 80, nCores = 40)
+Features_ADA_SHP =    select_features_ADA(Dataset = SHP_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), nfolds = 10, cv = 80, nCores = 40)
+Features_ADA_SHP_inv =select_features_ADA(Dataset = SHP_inv_mat_final, Label = as.factor(Training_targets_NA %in% positive_class), nfolds = 10, cv = 80, nCores = 40)
+Features_ADA_SHP_ind =select_features_ADA(Dataset = SHP_ind_mat_final, Label = as.factor(Training_targets_NA %in% positive_class), nfolds = 10, cv = 80, nCores = 40)
+Features_ADA_TOP =    select_features_ADA(Dataset = TOP_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), nfolds = 10, cv = 80, nCores = 40)
+Features_ADA_CLI =    select_features_ADA(Dataset = CLI_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), nfolds = 10, cv = 80, nCores = 40)
+Features_ADA_CLU =    select_features_ADA(Dataset = CLU_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), nfolds = 10, cv = 80, nCores = 40)
+Features_ADA_SIP =    select_features_ADA(Dataset = SIP_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), nfolds = 10, cv = 80, nCores = 40)
+Features_ADA_SIG =    select_features_ADA(Dataset = SIG_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), nfolds = 10, cv = 80, nCores = 40)
+
+Features_ADA_RWR = intersect_list(Features_ADA_RWR, freq_min = 64)
+Features_ADA_RWR_inv = intersect_list(Features_ADA_RWR_inv, freq_min = 64)
+Features_ADA_RWR_ind = intersect_list(Features_ADA_RWR_ind, freq_min = 64)
+Features_ADA_SHP = intersect_list(Features_ADA_SHP, freq_min = 64)
+Features_ADA_SHP_inv = intersect_list(Features_ADA_SHP_inv, freq_min = 64)
+Features_ADA_SHP_ind = intersect_list(Features_ADA_SHP_ind, freq_min = 64)
+Features_ADA_TOP = intersect_list(Features_ADA_TOP, freq_min = 64)
+Features_ADA_CLI = intersect_list(Features_ADA_CLI, freq_min = 64)
+Features_ADA_CLU = intersect_list(Features_ADA_CLU, freq_min = 64)
+Features_ADA_SIP = intersect_list(Features_ADA_SIP, freq_min = 64)
+Features_ADA_SIG = intersect_list(Features_ADA_SIG, freq_min = 64)
+```
+
+```{r Random forest feature selection}
+select_features_RF = function(Dataset, Label, cv = 3, nCores = 1){
+  require(randomForest)
+  require(caret)
+  run_rf = function(index, Dataset, Label){
+    min_class = min(table(Label[index]))
+    return(randomForest::randomForest(x = Dataset[index, ], y = as.factor(Label[index]), ntree = 250, sampsize = c(min_class, min_class)))
+  }
+  trainIndex <- createDataPartition(Label, p = .8, list = TRUE, times = cv)
+  Results = parallel::mclapply(seq_along(trainIndex), function(i) {print(i) ; run_rf(index = trainIndex[[i]], Dataset = Dataset, Label = Label)}, mc.cores = nCores)
+  names(Results) = paste0("Rep_", 1:length(trainIndex))
+  return(Results)
+}
+
+
+Features_RF_RWR =    select_features_RF(Dataset = RWR_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), cv = 120, nCores = 40)
+Features_RF_RWR_inv =select_features_RF(Dataset = RWR_inv_mat_final, Label = as.factor(Training_targets_NA %in% positive_class), cv = 120, nCores = 40)
+Features_RF_RWR_ind =select_features_RF(Dataset = RWR_ind_mat_final, Label = as.factor(Training_targets_NA %in% positive_class), cv = 120, nCores = 40)
+Features_RF_SHP =    select_features_RF(Dataset = SHP_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), cv = 120, nCores = 40)
+Features_RF_SHP_inv =select_features_RF(Dataset = SHP_inv_mat_final, Label = as.factor(Training_targets_NA %in% positive_class), cv = 120, nCores = 40)
+Features_RF_SHP_ind =select_features_RF(Dataset = SHP_ind_mat_final, Label = as.factor(Training_targets_NA %in% positive_class), cv = 120, nCores = 40)
+Features_RF_TOP =    select_features_RF(Dataset = TOP_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), cv = 120, nCores = 40)
+Features_RF_CLI =    select_features_RF(Dataset = CLI_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), cv = 120, nCores = 40)
+Features_RF_CLU =    select_features_RF(Dataset = CLU_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), cv = 120, nCores = 40)
+Features_RF_SIP =    select_features_RF(Dataset = SIP_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), cv = 120, nCores = 40)
+Features_RF_SIG =    select_features_RF(Dataset = SIG_mat_final,     Label = as.factor(Training_targets_NA %in% positive_class), cv = 120, nCores = 40)
+
+RF_func = function(Features_RF){
+  lapply(Features_RF, function(x) x$importance %>% {cbind(rownames(.), .)} %>% `colnames<-`(., c("feature", "Importance"))  %>% as.data.frame) %>% 
+    do.call(rbind, .) %>% group_by(feature) %>% summarise(Importance = mean(as.numeric(Importance))) %>% arrange(desc(Importance))
+}
+
+RF_importance_RWR = RF_func(Features_RF_RWR)
+RF_importance_RWR_inv = RF_func(Features_RF_RWR_inv)
+RF_importance_RWR_ind = RF_func(Features_RF_RWR_ind)
+RF_importance_SHP = RF_func(Features_RF_SHP)
+RF_importance_SHP_inv = RF_func(Features_RF_SHP_inv)
+RF_importance_SHP_ind = RF_func(Features_RF_SHP_ind)
+RF_importance_TOP = RF_func(Features_RF_TOP)
+RF_importance_CLI = RF_func(Features_RF_CLI)
+RF_importance_CLU = RF_func(Features_RF_CLU)
+RF_importance_SIP = RF_func(Features_RF_SIP)
+RF_importance_SIG = RF_func(Features_RF_SIG)
+
+
+Feature_RF_RWR = RF_importance_RWR %>% filter(Importance >= 0.035) %>% pull(feature)
+Feature_RF_RWR_inv = RF_importance_RWR_inv %>% filter(Importance >= 0.02) %>% pull(feature)
+Feature_RF_RWR_ind = RF_importance_RWR_ind %>% filter(Importance >= 0.02) %>% pull(feature)
+Feature_RF_SHP = RF_importance_SHP %>% filter(Importance >= 0.04) %>% pull(feature)
+Feature_RF_SHP_inv = RF_importance_SHP_inv %>% filter(Importance >= 0.03) %>% pull(feature)
+Feature_RF_SHP_ind = RF_importance_SHP_ind %>% filter(Importance >= 0.03) %>% pull(feature)
+Feature_RF_TOP = RF_importance_TOP %>% filter(Importance >= 0.1) %>% pull(feature)
+Feature_RF_CLI = RF_importance_CLI %>% filter(Importance >= 0) %>% pull(feature)
+Feature_RF_CLU = RF_importance_CLU %>% filter(Importance >= 0.4) %>% pull(feature)
+Feature_RF_SIP = RF_importance_SIP %>% filter(Importance >= 1) %>% pull(feature)
+Feature_RF_SIG = RF_importance_SIG %>% filter(Importance >= 0.2) %>% pull(feature)
+```
+
+```{r Union features}
+f_union_RWR = union(Features_ADA_RWR, Feature_RF_RWR)
+f_union_RWR_inv = union(Features_ADA_RWR_inv, Feature_RF_RWR_inv)
+f_union_RWR_ind = union(Features_ADA_RWR_ind, Feature_RF_RWR_ind)
+f_union_SHP = union(Features_ADA_SHP, Feature_RF_SHP)
+f_union_SHP_inv = union(Features_ADA_SHP_inv, Feature_RF_SHP_inv)
+f_union_SHP_ind = union(Features_ADA_SHP_ind, Feature_RF_SHP_ind)
+f_union_TOP = union(Features_ADA_TOP, Feature_RF_TOP)
+f_union_CLI = union(Features_ADA_CLI, Feature_RF_CLI)
+f_union_CLU = union(Features_ADA_CLU, Feature_RF_CLU)
+f_union_SIP = union(Features_ADA_SIP, Feature_RF_SIP)
+f_union_SIG = union(Features_ADA_SIG, Feature_RF_SIG)
+
+list_features = setNames(list(f_union_RWR,f_union_RWR_inv,f_union_RWR_ind,f_union_SHP,f_union_SHP_inv,f_union_SHP_ind,f_union_TOP,f_union_CLI,f_union_CLU,f_union_SIP,f_union_SIG), c("RWR", "RWR_inv", "RWR_und", "SHP", "SHP_inv", "SHP_ind", "TOP", "CLI", "CLU", "SiP", "SiG"))
+
+Feature_selected_df = as.data.frame(`colnames<-`(stringi::stri_list2matrix(list_features), names(list_features)))
+write_csv(Feature_selected_df, "Extracted_final_features.csv")
+```
+
+

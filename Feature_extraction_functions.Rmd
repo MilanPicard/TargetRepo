@@ -1,0 +1,77 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r load data}
+library(tidyverse)
+library(igraph)
+library(org.Hs.eg.db)
+
+source("utils.R")
+source("extract_functions.R")
+
+Network = graph_from_data_frame(read_csv("data/Network_edge_list.csv"))
+TT = read_csv("data/Positive_targets.csv")$Positive_targets
+
+Cluster_proteins = read_csv("data/Clusters_identifier_map_prot.csv") %>% as.list() %>% lapply(., function(x) na.omit(x) %>% as.vector)
+Cluster_genes = read_csv("data/Clusters_identifier_map_gene.csv") %>% as.list() %>% lapply(., function(x) na.omit(x) %>% as.vector)
+
+Signature_list_gene = read_csv("data/Signature_prostate_cancer_map_gene_df.csv") %>% as.list() %>% lapply(., function(x) na.omit(x) %>% as.vector)
+Signature_list_prot = read_csv("data/Signature_prostate_cancer_map_prot_df.csv") %>% as.list() %>% lapply(., function(x) na.omit(x) %>% as.vector)
+```
+
+
+```{r extract all features}
+# Random walks with restart Propagation
+# Downstream
+RWR_mat = extract_by_rwr(Graph = Network, start_nodes = vnames(Network, type = "Prot_"), nCores = 1)
+saveRDS(RWR_mat, "RWR_mat.rds")
+# Upstream
+RWR_inv_mat = extract_by_rwr_inv(Graph = Network, start_nodes = vnames(Network, type = "Prot_"), nCores = 1)
+saveRDS(RWR_inv_mat, "RWR_inv_mat.rds")
+# Non directional
+RWR_ind_mat = extract_by_rwr_ind(Graph = Network, start_nodes = vnames(Network, type = "Prot_"), nCores = 1)
+saveRDS(RWR_ind_mat, "RWR_ind_mat.rds")
+
+# Shortest path Propagation
+# Downstream
+SHP_mat = extract_by_shp(Graph = Network, start_nodes = vnames(Network, type = "Prot_"))
+saveRDS(SHP_mat, "SHP_mat.rds")
+# Upstream
+SHP_inv_mat = extract_by_shp_inv(Graph = Network, start_nodes = vnames(Network, type = "Prot_"))
+saveRDS(SHP_inv_mat, "SHP_inv_mat.rds")
+# Non directional
+SHP_ind_mat = extract_by_shp_ind(Graph = Network, start_nodes = vnames(Network, type = "Prot_"))
+saveRDS(SHP_ind_mat, "SHP_ind_mat.rds")
+
+# General information and topological similarity
+TOP_mat = extract_topolo(Graph = Network, start_nodes = vnames(Network, type = "Prot_"))
+saveRDS(TOP_mat, "TOP_mat.rds")
+
+# Module-based
+# Clique
+CLI_mat = extract_clidis(Graph = Network, start_nodes = vnames(Network, type = "Prot_"), dist_matrix = SHP_mat, Ncores = 40)
+saveRDS(CLI_mat, "CLI_mat.rds")
+# Cluster
+CLU_mat = extract_cludis(Graph = Network, start_nodes = vnames(Network, type = "Prot_"), dist_matrix = SHP_mat, Clusters = Cluster_proteins)
+saveRDS(CLU_mat, "CLU_mat.rds")
+
+# Signature-based features
+# Signature mapped on protein layer
+SIP_mat = extract_siprot2(Graph = Network, start_nodes = vnames(Network, type = "Prot_"), dist_matrix = SHP_mat, 
+                          Clusters = Cluster_proteins, Signatures_prot = Signature_list_prot)
+saveRDS(SIP_mat, "SIP_mat.rds")
+# Signature mapped on gene layer
+SIG_mat = extract_sigene2(Graph = Network, start_nodes = vnames(Network, type = "Prot_"), dist_matrix = SHP_mat, dist_matrix_inv = SHP_inv_mat, 
+                          Clusters = Cluster_genes, Signatures_gene = Signature_list_gene)
+saveRDS(SIG_mat, "SIG_mat.rds")
+
+# Extract random features for random distribution.
+RAN_mat = extract_random(Graph = Network, start_nodes = vnames(Network, type = "Prot_"), dist_matrix = SHP_mat, Clusters_prot = Cluster_proteins, Signatures_prot = Signature_list_prot, TT = TT)
+saveRDS(RAN_mat, "RAN_mat.rds")
+RAN_TOP_mat = extract_random_top(Graph = Network, start_nodes = vnames(Network, type = "Prot_"))
+saveRDS(RAN_TOP_mat, "RAN_TOP_mat.rds")
+```
+

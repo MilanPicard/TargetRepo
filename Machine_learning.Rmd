@@ -1,0 +1,452 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r load data}
+library(tidyverse)
+library(igraph)
+library(caret)
+library(mltools)
+library(data.table)
+library(randomForest)
+library(parallel)
+library(e1071)
+library(naivebayes)
+library(h2o)
+
+
+training_datasets = load("XXX_mat_final.rdata")
+test_datasets = load("XXX_mat_test.rdata")
+
+Test = data.frame(SHP_mat_test,SHP_inv_mat_test,SHP_ind_mat_test,RWR_mat_test,RWR_inv_mat_test,RWR_ind_mat_test,TOP_mat_test,CLI_mat_test,CLU_mat_test,SIP_mat_test,SIG_mat_test)
+
+additional_infor = load("split_information.rds")
+Final_features = read_csv("Extracted_final_features.csv")
+
+f_union_RWR = Final_features$RWR
+f_union_RWR_inv = Final_features$RWR_inv
+f_union_RWR_ind = Final_features$RWR_und
+f_union_SHP = Final_features$SHP
+f_union_SHP_inv = Final_features$SHP_inv
+f_union_SHP_ind = Final_features$SHP_ind
+f_union_TOP = Final_features$TOP
+f_union_CLI = Final_features$CLI
+f_union_CLU = Final_features$CLU
+f_union_SIP = Final_features$SiP
+f_union_SIG = Final_features$SiG
+
+Y = Training_targets_NA %in% positive_class
+Y.test = Test_targets %in% positive_class
+
+get_metrics = function(predicted, actuals){
+  c(confusionMatrix(data = as.factor(predicted), reference = as.factor(actuals), mode = "everything", positive = "TRUE")$byClass[c(2,5,6,11)],
+    AUC=auc_roc(preds = as.vector(predicted), actuals = as.vector(actuals)),
+    MCC=mcc(preds = as.factor(predicted), actuals = as.factor(actuals)))
+}
+
+CV = function(class, k = 10, repetition = 5){
+  Training_indexes = replicate(n = repetition, createFolds(y = class, k = k, list = TRUE, returnTrain = TRUE), simplify = FALSE)
+  names(Training_indexes) = paste0("Rep_", 1:repetition)
+  return(Training_indexes)
+}
+
+```
+
+```{r naivebayes}
+CV_tuning_NB = function(X, Y, k=10, repetition=10, Ncores=1){
+  # Create grid search for parameters
+  Tuning_grid = data.frame(usekernel = c(FALSE,TRUE,TRUE,TRUE,TRUE), kernel = c(NA,"gaussian","rectangular","triangular","biweight"))
+  
+  # Create indexes for repeated CV
+  CV_indexes = unlist(CV(class = Y, k = k, repetition=repetition), recursive = FALSE)
+  Tuning_NB = function(fold, X, Y, Tuning_grid){
+    # Create datasets
+    x.multifolds = X[fold, ]
+    y.multifolds = Y[fold]
+    x.fold = X[-fold, ]
+    y.fold = Y[-fold]
+    
+    # Gather mccs for all combinaition of parameters
+    Train.MCC = c()
+    for(i in seq_len(nrow(Tuning_grid))){
+      ML = naive_bayes(x = x.multifolds, y = y.multifolds, usekernel = Tuning_grid$usekernel[i], kernel=Tuning_grid$kernel[i])
+      add(Train.MCC, mcc(preds = predict(ML, newdata = x.fold), actuals = as.factor(y.fold)))
+    }
+    names(Train.MCC) = paste0("Param_", 1:nrow(Tuning_grid))
+    return(Train.MCC)
+  }
+  Train.MCC.CV = mclapply(CV_indexes, function(fold) Tuning_NB(fold = fold, X = X, Y = Y, Tuning_grid = Tuning_grid), mc.cores = Ncores)
+  
+  Results_matrix = do.call(cbind, Train.MCC.CV)
+  Results_matrix = cbind.data.frame(Parameters = as.numeric(str_remove(rownames(Results_matrix), "Param_")), Average = rowMeans(Results_matrix), Results_matrix) %>% arrange(desc(Average))
+  Best_parameters = cbind(Tuning_grid[Results_matrix %>% pull(Parameters) %>% .[1:min(5, nbr(.))], ], Average=Results_matrix$Average[1:min(5, nrow(Results_matrix))])
+  return(list(Best_parameters=Best_parameters, Results_matrix=Results_matrix))
+}
+
+NB1 = CV_tuning_NB(X = RWR_mat_final[, f_union_RWR], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 35)
+NB2 = CV_tuning_NB(X = RWR_inv_mat_final[, f_union_RWR_inv], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 35)
+NB3 = CV_tuning_NB(X = RWR_ind_mat_final[, f_union_RWR_ind], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 35)
+NB4 = CV_tuning_NB(X = SHP_mat_final[, f_union_SHP], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 35)
+NB5 = CV_tuning_NB(X = SHP_inv_mat_final[, f_union_SHP_inv], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 35)
+NB6 = CV_tuning_NB(X = SHP_ind_mat_final[, f_union_SHP_ind], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 35)
+NB7 = CV_tuning_NB(X = TOP_mat_final[, f_union_TOP], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 35)
+NB8 = CV_tuning_NB(X = CLI_mat_final[, f_union_CLI], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 35)
+NB9 = CV_tuning_NB(X = CLU_mat_final[, f_union_CLU], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 35)
+NB10 = CV_tuning_NB(X = SIP_mat_final[, f_union_SIP], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 35)
+NB11 = CV_tuning_NB(X = SIG_mat_final[, f_union_SIG], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 35)
+NB12 = CV_tuning_NB(X = Train, Y = as.factor(Y), k = 10, repetition = 10, Ncores = 1)
+
+ML1 = naive_bayes(x = RWR_mat_final[, f_union_RWR], y = as.factor(Y), usekernel = NB1[[1]]$usekernel[1], kernel=NB1[[1]]$kernel[1])
+ML2 = naive_bayes(x = RWR_inv_mat_final[, f_union_RWR_inv], y = as.factor(Y), usekernel = NB2[[1]]$usekernel[1], kernel=NB2[[1]]$kernel[1])
+ML3 = naive_bayes(x = RWR_ind_mat_final[, f_union_RWR_ind], y = as.factor(Y), usekernel = NB3[[1]]$usekernel[1], kernel=NB3[[1]]$kernel[1])
+ML4 = naive_bayes(x = SHP_mat_final[, f_union_SHP], y = as.factor(Y), usekernel = NB4[[1]]$usekernel[1], kernel=NB4[[1]]$kernel[1])
+ML5 = naive_bayes(x = SHP_inv_mat_final[, f_union_SHP_inv], y = as.factor(Y), usekernel = NB5[[1]]$usekernel[1], kernel=NB5[[1]]$kernel[1])
+ML6 = naive_bayes(x = SHP_ind_mat_final[, f_union_SHP_ind], y = as.factor(Y), usekernel = NB6[[1]]$usekernel[1], kernel=NB6[[1]]$kernel[1])
+ML7 = naive_bayes(x = TOP_mat_final[, f_union_TOP], y = as.factor(Y), usekernel = NB7[[1]]$usekernel[1], kernel=NB7[[1]]$kernel[1])
+ML8 = naive_bayes(x = CLI_mat_final[, f_union_CLI], y = as.factor(Y), usekernel = NB8[[1]]$usekernel[1], kernel=NB8[[1]]$kernel[1])
+ML9 = naive_bayes(x = CLU_mat_final[, f_union_CLU], y = as.factor(Y), usekernel = NB9[[1]]$usekernel[1], kernel=NB9[[1]]$kernel[1])
+ML10 = naive_bayes(x = SIP_mat_final[, f_union_SIP], y = as.factor(Y), usekernel = NB10[[1]]$usekernel[1], kernel=NB10[[1]]$kernel[1])
+ML11 = naive_bayes(x = SIG_mat_final[, f_union_SIG], y = as.factor(Y), usekernel = NB11[[1]]$usekernel[1], kernel=NB11[[1]]$kernel[1])
+ML12 = naive_bayes(x = Train, y = as.factor(Y), usekernel = NB12[[1]]$usekernel[1], kernel=NB12[[1]]$kernel[1])
+
+rownames(Test) = Test_targets
+Train_MCC.NB = c(NB1[[1]]$Average[1],NB2[[1]]$Average[1],NB3[[1]]$Average[1],NB4[[1]]$Average[1],NB5[[1]]$Average[1],NB6[[1]]$Average[1],NB7[[1]]$Average[1],NB8[[1]]$Average[1],NB9[[1]]$Average[1],NB10[[1]]$Average[1],NB11[[1]]$Average[1],NB12[[1]]$Average[1])
+Test_MCC.NB = c(mcc(preds = predict(ML1, newdata = Test[, f_union_RWR]), actuals = as.factor(Y.test)),
+                mcc(preds = predict(ML2, newdata = Test[, f_union_RWR_inv]), actuals = as.factor(Y.test)),
+                mcc(preds = predict(ML3, newdata = Test[, f_union_RWR_ind]), actuals = as.factor(Y.test)),
+                mcc(preds = predict(ML4, newdata = Test[, f_union_SHP]), actuals = as.factor(Y.test)),
+                mcc(preds = predict(ML5, newdata = Test[, f_union_SHP_inv]), actuals = as.factor(Y.test)),
+                mcc(preds = predict(ML6, newdata = Test[, f_union_SHP_ind]), actuals = as.factor(Y.test)),
+                mcc(preds = predict(ML7, newdata = Test[, f_union_TOP]), actuals = as.factor(Y.test)),
+                mcc(preds = predict(ML8, newdata = Test[, f_union_CLI]), actuals = as.factor(Y.test)),
+                mcc(preds = predict(ML9, newdata = Test[, f_union_CLU]), actuals = as.factor(Y.test)),
+                mcc(preds = predict(ML10, newdata = Test[, f_union_SIP]), actuals = as.factor(Y.test)),
+                mcc(preds = predict(ML11, newdata = Test[, f_union_SIG]), actuals = as.factor(Y.test)),
+                mcc(preds = predict(ML12, newdata = Test[, names(Train)]), actuals = as.factor(Y.test)))
+
+All_results_combined = cbind(All_results_combined, NB.train = round(NB_Train_mcc, 2), NB.test = round(NB_Test_mcc, 2))
+
+save(Train_MCC.NB,Test_MCC.NB, file = "final_results_NB_MCC.rdata")
+```
+
+```{r KNN}
+CV_tuning_KNN = function(X, Y, parameters, k=10, repetition=10, Ncores=1){
+  require("kknn")
+  # Create grid search for parameters
+  Tuning_grid = expand.grid(parameters)
+  
+  # Create indexes for repeated CV
+  CV_indexes = unlist(CV(class = Y, k = k, repetition=repetition), recursive = FALSE)
+  Tuning_knn = function(fold, X, Y, Tuning_grid){
+    # Create datasets
+    x.multifolds = X[fold, ]
+    y.multifolds = Y[fold]
+    x.fold = X[-fold, ]
+    y.fold = Y[-fold]
+    
+    # Gather mccs for all combinaition of parameters
+    Train.MCC = c()
+    for(i in seq_len(nrow(Tuning_grid))){
+      df = data.frame(y = as.factor(y.multifolds), x.multifolds)
+      ML = kknn::train.kknn(y~., df,kernel = as.vector(Tuning_grid$kernel[i]), ks = Tuning_grid$ks[i], distance = Tuning_grid$distance[i])
+      add(Train.MCC, mcc(preds = predict(ML, newdata = x.fold), actuals = as.factor(y.fold)))
+    }
+    names(Train.MCC) = paste0("Param_", 1:nrow(Tuning_grid))
+    return(Train.MCC)
+  }
+  Train.MCC.CV = mclapply(seq_along(CV_indexes), function(i) {print(i);Tuning_knn(fold = CV_indexes[[i]], X = X, Y = Y, Tuning_grid = Tuning_grid)}, mc.cores = Ncores)
+  
+  Results_matrix = do.call(cbind, Train.MCC.CV)
+  Results_matrix = cbind.data.frame(Parameters = as.numeric(str_remove(rownames(Results_matrix), "Param_")), Average = rowMeans(Results_matrix), Results_matrix) %>% arrange(desc(Average))
+  Best_parameters = cbind(Tuning_grid[Results_matrix %>% pull(Parameters) %>% .[1:min(5, nbr(.))], ], Average=Results_matrix$Average[1:min(5, nrow(Results_matrix))])
+  return(list(Best_parameters=Best_parameters, Results_matrix=Results_matrix))
+}
+
+parameters = list(kernel = c("gaussian","rectangular","biweight","optimal"),ks = c(3,5,7,9,11,13),distance = c(1,1.5,1.8,2))
+
+KNN1 =  CV_tuning_KNN(X = RWR_mat_final[, f_union_RWR],         Y = as.factor(Y), parameters = parameters, k = 10, repetition = 10, Ncores = 55)
+KNN2 =  CV_tuning_KNN(X = RWR_inv_mat_final[, f_union_RWR_inv], Y = as.factor(Y), parameters = parameters, k = 10, repetition = 10, Ncores = 55)
+KNN3 =  CV_tuning_KNN(X = RWR_ind_mat_final[, f_union_RWR_ind], Y = as.factor(Y), parameters = parameters, k = 10, repetition = 10, Ncores = 55)
+KNN4 =  CV_tuning_KNN(X = SHP_mat_final[, f_union_SHP],         Y = as.factor(Y), parameters = parameters, k = 10, repetition = 10, Ncores = 55)
+KNN5 =  CV_tuning_KNN(X = SHP_inv_mat_final[, f_union_SHP_inv], Y = as.factor(Y), parameters = parameters, k = 10, repetition = 10, Ncores = 55)
+KNN6 =  CV_tuning_KNN(X = SHP_ind_mat_final[, f_union_SHP_ind], Y = as.factor(Y), parameters = parameters, k = 10, repetition = 10, Ncores = 55)
+KNN7 =  CV_tuning_KNN(X = TOP_mat_final[, f_union_TOP],         Y = as.factor(Y), parameters = parameters, k = 10, repetition = 10, Ncores = 55)
+KNN8 =  CV_tuning_KNN(X = CLI_mat_final[, f_union_CLI],         Y = as.factor(Y), parameters = parameters, k = 10, repetition = 10, Ncores = 55)
+KNN9 =  CV_tuning_KNN(X = CLU_mat_final[, f_union_CLU],         Y = as.factor(Y), parameters = parameters, k = 10, repetition = 10, Ncores = 55)
+KNN10 = CV_tuning_KNN(X = SIP_mat_final[, f_union_SIP],         Y = as.factor(Y), parameters = parameters, k = 10, repetition = 10, Ncores = 55)
+KNN11 = CV_tuning_KNN(X = SIG_mat_final[, f_union_SIG],         Y = as.factor(Y), parameters = parameters, k = 10, repetition = 10, Ncores = 55)
+KNN12 = CV_tuning_KNN(X = Train,                                Y = as.factor(Y), parameters = parameters, k = 10, repetition = 10, Ncores = 55)
+
+KNN_ML_1 =  kknn::train.kknn(Y~., data.frame(Y = as.factor(Y), RWR_mat_final[, f_union_RWR]),        kernel = as.vector(KNN1[[1]]$kernel[1]),  ks = KNN1[[1]]$ks[1],  distance = KNN1[[1]]$distance[1])
+KNN_ML_2 =  kknn::train.kknn(Y~., data.frame(Y = as.factor(Y), RWR_inv_mat_final[, f_union_RWR_inv]),kernel = as.vector(KNN2[[1]]$kernel[1]),  ks = KNN2[[1]]$ks[1],  distance = KNN2[[1]]$distance[1])
+KNN_ML_3 =  kknn::train.kknn(Y~., data.frame(Y = as.factor(Y), RWR_ind_mat_final[, f_union_RWR_ind]),kernel = as.vector(KNN3[[1]]$kernel[1]),  ks = KNN3[[1]]$ks[1],  distance = KNN3[[1]]$distance[1])
+KNN_ML_4 =  kknn::train.kknn(Y~., data.frame(Y = as.factor(Y), SHP_mat_final[, f_union_SHP])        ,kernel = as.vector(KNN4[[1]]$kernel[1]),  ks = KNN4[[1]]$ks[1],  distance = KNN4[[1]]$distance[1])
+KNN_ML_5 =  kknn::train.kknn(Y~., data.frame(Y = as.factor(Y), SHP_inv_mat_final[, f_union_SHP_inv]),kernel = as.vector(KNN5[[1]]$kernel[1]),  ks = KNN5[[1]]$ks[1],  distance = KNN5[[1]]$distance[1])
+KNN_ML_6 =  kknn::train.kknn(Y~., data.frame(Y = as.factor(Y), SHP_ind_mat_final[, f_union_SHP_ind]),kernel = as.vector(KNN6[[1]]$kernel[1]),  ks = KNN6[[1]]$ks[1],  distance = KNN6[[1]]$distance[1])
+KNN_ML_7 =  kknn::train.kknn(Y~., data.frame(Y = as.factor(Y), TOP_mat_final[, f_union_TOP]),        kernel = as.vector(KNN7[[1]]$kernel[1]),  ks = KNN7[[1]]$ks[1],  distance = KNN7[[1]]$distance[1])
+KNN_ML_8 =  kknn::train.kknn(Y~., data.frame(Y = as.factor(Y), CLI_mat_final[, f_union_CLI]),        kernel = as.vector(KNN8[[1]]$kernel[1]),  ks = KNN8[[1]]$ks[1],  distance = KNN8[[1]]$distance[1])
+KNN_ML_9 =  kknn::train.kknn(Y~., data.frame(Y = as.factor(Y), CLU_mat_final[, f_union_CLU]),        kernel = as.vector(KNN9[[1]]$kernel[1]),  ks = KNN9[[1]]$ks[1],  distance = KNN9[[1]]$distance[1])
+KNN_ML_10 = kknn::train.kknn(Y~., data.frame(Y = as.factor(Y), SIP_mat_final[, f_union_SIP]),        kernel = as.vector(KNN10[[1]]$kernel[1]), ks = KNN10[[1]]$ks[1], distance = KNN10[[1]]$distance[1])
+KNN_ML_11 = kknn::train.kknn(Y~., data.frame(Y = as.factor(Y), SIG_mat_final[, f_union_SIG]),        kernel = as.vector(KNN11[[1]]$kernel[1]), ks = KNN11[[1]]$ks[1], distance = KNN11[[1]]$distance[1])
+KNN_ML_12 = kknn::train.kknn(Y~., data.frame(Y = as.factor(Y), Train),                               kernel = as.vector(KNN12[[1]]$kernel[1]), ks = KNN12[[1]]$ks[1], distance = KNN12[[1]]$distance[1])
+
+Train.MCC_KNN = c(KNN1[[1]]$Average[1], KNN2[[1]]$Average[1],KNN3[[1]]$Average[1],KNN4[[1]]$Average[1],KNN5[[1]]$Average[1],KNN6[[1]]$Average[1],KNN7[[1]]$Average[1],KNN8[[1]]$Average[1],KNN9[[1]]$Average[1],KNN10[[1]]$Average[1],KNN11[[1]]$Average[1],KNN12[[1]]$Average[1])
+Test.MCC_KNN = c(mcc(actuals = as.factor(Y.test[complete.cases(Test[, f_union_RWR])]),     preds=predict(KNN_ML_1,  Test[, f_union_RWR]    [complete.cases(Test[, f_union_RWR]), ]    )),
+                 mcc(actuals = as.factor(Y.test[complete.cases(Test[, f_union_RWR_inv])]), preds=predict(KNN_ML_2,  Test[, f_union_RWR_inv][complete.cases(Test[, f_union_RWR_inv]), ])),
+                 mcc(actuals = as.factor(Y.test[complete.cases(Test[, f_union_RWR_ind])]), preds=predict(KNN_ML_3,  Test[, f_union_RWR_ind][complete.cases(Test[, f_union_RWR_ind]), ])),
+                 mcc(actuals = as.factor(Y.test[complete.cases(Test[, f_union_SHP])]),     preds=predict(KNN_ML_4,  Test[, f_union_SHP]    [complete.cases(Test[, f_union_SHP]), ]    )),
+                 mcc(actuals = as.factor(Y.test[complete.cases(Test[, f_union_SHP_inv])]), preds=predict(KNN_ML_5,  Test[, f_union_SHP_inv][complete.cases(Test[, f_union_SHP_inv]), ])),
+                 mcc(actuals = as.factor(Y.test[complete.cases(Test[, f_union_SHP_ind])]), preds=predict(KNN_ML_6,  Test[, f_union_SHP_ind][complete.cases(Test[, f_union_SHP_ind]), ])),
+                 mcc(actuals = as.factor(Y.test[complete.cases(Test[, f_union_TOP])]),     preds=predict(KNN_ML_7,  Test[, f_union_TOP]    [complete.cases(Test[, f_union_TOP]),     ])),
+                 mcc(actuals = as.factor(Y.test[complete.cases(Test[, f_union_CLI])]),     preds=predict(KNN_ML_8,  Test[, f_union_CLI]    [complete.cases(Test[, f_union_CLI]),     ])),
+                 mcc(actuals = as.factor(Y.test[complete.cases(Test[, f_union_CLU])]),     preds=predict(KNN_ML_9,  Test[, f_union_CLU]    [complete.cases(Test[, f_union_CLU]),     ])),
+                 mcc(actuals = as.factor(Y.test[complete.cases(Test[, f_union_SIP])]),     preds=predict(KNN_ML_10, Test[, f_union_SIP]    [complete.cases(Test[, f_union_SIP]),     ])),
+                 mcc(actuals = as.factor(Y.test[complete.cases(Test[, f_union_SIG])]),     preds=predict(KNN_ML_11, Test[, f_union_SIG]    [complete.cases(Test[, f_union_SIG]),     ])),
+                 mcc(actuals = as.factor(Y.test[complete.cases(Test[, names(Train)])]),    preds=predict(KNN_ML_12, Test[, names(Train)]   [complete.cases(Test[, names(Train)]),    ])))
+
+save(Train.MCC_KNN,Test.MCC_KNN, file = "final_results_KNN_MCC.rdata")
+```
+
+```{r random forest}
+set.seed(123)
+RF1 = mclapply(1:100,function(i) randomForest(x=RWR_mat_final[, f_union_RWR], y=as.factor(Y), ntree=200, sampsize=c(80,80)), mc.cores = 35)
+RF2 = mclapply(1:100,function(i) randomForest(x=RWR_inv_mat_final[, f_union_RWR_inv], y=as.factor(Y), ntree=200, sampsize=c(80,80)), mc.cores = 35)
+RF3 = mclapply(1:100,function(i) randomForest(x=RWR_ind_mat_final[, f_union_RWR_ind], y=as.factor(Y), ntree=200, sampsize=c(80,80)), mc.cores = 35)
+RF4 = mclapply(1:100,function(i) randomForest(x=SHP_mat_final[, f_union_SHP], y=as.factor(Y), ntree=200, sampsize=c(80,80)), mc.cores = 35)
+RF5 = mclapply(1:100,function(i) randomForest(x=SHP_inv_mat_final[, f_union_SHP_inv], y=as.factor(Y), ntree=200, sampsize=c(80,80)), mc.cores = 35)
+RF6 = mclapply(1:100,function(i) randomForest(x=SHP_ind_mat_final[, f_union_SHP_ind], y=as.factor(Y), ntree=200, sampsize=c(80,80)), mc.cores = 35)
+RF7 = mclapply(1:100,function(i) randomForest(x=TOP_mat_final[, f_union_TOP], y=as.factor(Y), ntree=200, sampsize=c(80,80)), mc.cores = 35)
+RF8 = mclapply(1:100,function(i) randomForest(x=CLI_mat_final[, f_union_CLI], y=as.factor(Y), ntree=200, sampsize=c(80,80)), mc.cores = 35)
+RF9 = mclapply(1:100,function(i) randomForest(x=CLU_mat_final[, f_union_CLU], y=as.factor(Y), ntree=200, sampsize=c(80,80)), mc.cores = 35)
+RF10 = mclapply(1:100,function(i) randomForest(x=SIP_mat_final[, f_union_SIP], y=as.factor(Y), ntree=200, sampsize=c(80,80)), mc.cores = 35)
+RF11 = mclapply(1:100,function(i) randomForest(x=SIG_mat_final[, f_union_SIG], y=as.factor(Y), ntree=200, sampsize=c(80,80)), mc.cores = 35)
+RF12 = mclapply(1:100,function(i) randomForest(x=Train, y=as.factor(Y), ntree=200, sampsize=c(80,80)), mc.cores = 35)
+
+RF_predict = function(RF_results){
+  rowMeans(do.call(cbind.data.frame, lapply(RF_results, function(model) as.logical(model$predicted)))) >= .5
+}
+
+RF_predict.test = function(RF_results){
+  # Format test set
+  Test2 = Test[, rownames(RF_results[[1]]$importance)]
+  rownames(Test2) = Test_targets
+  Test2 = Test2[complete.cases(Test2), ]
+  
+  # Gather results
+  Result_table = do.call(cbind.data.frame, lapply(RF_results, function(model) predict(model, Test2)))
+  names(Result_table) = paste0("Rep_", 1:100)
+  # Random operations so that the next parts go smoothy
+  # Due to missing values in Test set, in order to aggreagate everything it is more challenging
+  Result_table = Result_table %>% mutate_all(as.logical) %>% mutate_all(as.numeric)
+  Result_table = cbind(Targets = rownames(Result_table), Result_table)
+  Result_table = full_join(Result_table, as.data.frame(Test_targets), by = c("Targets"="Test_targets"))
+  rownames(Result_table) = Result_table$Targets
+  Result_table$Targets = NULL
+  Result_table = Result_table[Test_targets, ]
+  return(rowMeans(Result_table) >= .5)
+}
+
+RF_df_results = data.frame(class=as.factor(Y), pred1 = RF_predict(RF1),pred2 = RF_predict(RF2),pred3 = RF_predict(RF3),pred4 = RF_predict(RF4),pred5 = RF_predict(RF5),pred6 = RF_predict(RF6),pred7 = RF_predict(RF7),pred8 = RF_predict(RF8),pred9 = RF_predict(RF9),pred10 = RF_predict(RF10),pred11 = RF_predict(RF11),pred12 = RF_predict(RF12))
+
+RF_CSV_results.Train = data.frame(Dataset = c("RWR","RWR_inv","RWR_ind","SHP","SHP_inv","SHP_ind","TOP","CLI","CLU","SIP","SIG","All"), 
+      round(rbind(get_metrics(RF_df_results$class, RF_df_results$pred1),get_metrics(RF_df_results$class, RF_df_results$pred2),get_metrics(RF_df_results$class, RF_df_results$pred3),get_metrics(RF_df_results$class, RF_df_results$pred4),get_metrics(RF_df_results$class, RF_df_results$pred5),get_metrics(RF_df_results$class, RF_df_results$pred6),get_metrics(RF_df_results$class, RF_df_results$pred7),get_metrics(RF_df_results$class, RF_df_results$pred8),get_metrics(RF_df_results$class, RF_df_results$pred9),get_metrics(RF_df_results$class, RF_df_results$pred10),get_metrics(RF_df_results$class, RF_df_results$pred11),get_metrics(RF_df_results$class, RF_df_results$pred12)), 2))
+
+RF_df_results.test = data.frame(class=as.factor(Y.test), pred1 = RF_predict.test(RF1),pred2 = RF_predict.test(RF2),pred3 = RF_predict.test(RF3),pred4 = RF_predict.test(RF4),pred5 = RF_predict.test(RF5),pred6 = RF_predict.test(RF6),pred7 = RF_predict.test(RF7),pred8 = RF_predict.test(RF8),pred9 = RF_predict.test(RF9),pred10 = RF_predict.test(RF10),pred11 = RF_predict.test(RF11),pred12 = RF_predict.test(RF12))
+RF_df_results.test[is.na(RF_df_results.test)] = FALSE
+
+
+RF_CSV_results.Test = data.frame(Dataset = c("RWR","RWR_inv","RWR_ind","SHP","SHP_inv","SHP_ind","TOP","CLI","CLU","SIP","SIG","All"), 
+      round(rbind(get_metrics(RF_df_results.test$class, RF_df_results.test$pred1),get_metrics(RF_df_results.test$class, RF_df_results.test$pred2),get_metrics(RF_df_results.test$class, RF_df_results.test$pred3),get_metrics(RF_df_results.test$class, RF_df_results.test$pred4),get_metrics(RF_df_results.test$class, RF_df_results.test$pred5),get_metrics(RF_df_results.test$class, RF_df_results.test$pred6),get_metrics(RF_df_results.test$class, RF_df_results.test$pred7),get_metrics(RF_df_results.test$class, RF_df_results.test$pred8),get_metrics(RF_df_results.test$class, RF_df_results.test$pred9),get_metrics(RF_df_results.test$class, RF_df_results.test$pred10),get_metrics(RF_df_results.test$class, RF_df_results.test$pred11),get_metrics(RF_df_results.test$class, RF_df_results.test$pred12)), 2))
+
+Train_MCC.RF = RF_CSV_results.Train$MCC
+Test_MCC.RF = RF_CSV_results.Test$MCC
+save(Train_MCC.RF,Test_MCC.RF, file = "final_results_RF_MCC.rdata")
+```
+
+```{r svm functions}
+CV_tuning_SVM2 = function(X, Y, parameters, k=10, repetition=10, Ncores=1){
+  # Create grid search for parameters
+  Tuning_grid = expand.grid(parameters)
+  
+  # Create indexes for repeated CV
+  CV_indexes = unlist(CV(class = Y, k = k, repetition=repetition), recursive = FALSE)
+  Tuning_svm = function(fold, X, Y, Tuning_grid){
+    # Create datasets
+    x.multifolds = X[fold, ]
+    y.multifolds = Y[fold]
+    x.fold = X[-fold, ]
+    y.fold = Y[-fold]
+    
+    # Gather mccs for all combinaition of parameters
+    Train.MCC = c()
+    for(i in seq_len(nrow(Tuning_grid))){
+      ML = e1071::svm(x = x.multifolds, y = as.factor(y.multifolds), kernel = "radial", 
+                      gamma = Tuning_grid$gamma[i],
+                      cost = Tuning_grid$cost[i], 
+                      class.weights = Tuning_grid$class.weights[[i]])
+      
+      add(Train.MCC, mcc(preds = predict(ML, newdata = x.fold), actuals = as.factor(y.fold)))
+    }
+    names(Train.MCC) = paste0("Param_", 1:nrow(Tuning_grid))
+    return(Train.MCC)
+  }
+  Train.MCC.CV = mclapply(CV_indexes, function(fold) Tuning_svm(fold = fold, X = X, Y = Y, Tuning_grid = Tuning_grid), mc.cores = Ncores)
+  Results_matrix = do.call(cbind, Train.MCC.CV)
+  Results_matrix = cbind.data.frame(Parameters = as.numeric(str_remove(rownames(Results_matrix), "Param_")), Average = rowMeans(Results_matrix), Results_matrix) %>% arrange(desc(Average))
+  Best_parameters = cbind(Tuning_grid[Results_matrix %>% pull(Parameters) %>% .[1:min(5, nbr(.))], ], Average=Results_matrix$Average[1:min(5, nrow(Results_matrix))])
+  return(list(Best_parameters=Best_parameters, Results_matrix=Results_matrix))
+}
+
+SVM1_1 = CV_tuning_SVM2(X = RWR_mat_final[, f_union_RWR], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 40,parameters = list(cost = round(3^(1:10)), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM2_1 = CV_tuning_SVM2(X = RWR_inv_mat_final[, f_union_RWR_inv], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 40,parameters = list(cost = round(3^(1:10)), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM3_1 = CV_tuning_SVM2(X = RWR_ind_mat_final[, f_union_RWR_ind], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 40,parameters = list(cost = round(3^(1:10)), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM4_1 = CV_tuning_SVM2(X = SHP_mat_final[, f_union_SHP], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 40,parameters = list(cost = round(3^(1:10)), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM5_1 = CV_tuning_SVM2(X = SHP_inv_mat_final[, f_union_SHP_inv], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 40,parameters = list(cost = round(3^(1:10)), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM6_1 = CV_tuning_SVM2(X = SHP_ind_mat_final[, f_union_SHP_ind], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 40,parameters = list(cost = round(3^(1:10)), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM7_1 = CV_tuning_SVM2(X = TOP_mat_final[, f_union_TOP], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 40,parameters = list(cost = round(3^(1:10)), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM8_1 = CV_tuning_SVM2(X = CLI_mat_final[, f_union_CLI], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 40,parameters = list(cost = round(3^(1:10)), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM9_1 = CV_tuning_SVM2(X = CLU_mat_final[, f_union_CLU], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 40,parameters = list(cost = round(3^(1:10)), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM10_1 = CV_tuning_SVM2(X = SIP_mat_final[, f_union_SIP], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 40,parameters = list(cost = round(3^(1:10)), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM11_1 = CV_tuning_SVM2(X = SIG_mat_final[, f_union_SIG], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 40,parameters = list(cost = round(3^(1:10)), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM12_1 = CV_tuning_SVM2(X = Train, Y = as.factor(Y), k = 10, repetition = 10, Ncores = 40,parameters = list(cost = round(3^(1:10)), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+
+SVM1_2 = CV_tuning_SVM2(X = RWR_mat_final[, f_union_RWR], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(cost = c(0.01,0.1,0.5,1,2), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM2_2 = CV_tuning_SVM2(X = RWR_inv_mat_final[, f_union_RWR_inv], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(cost = c(0.01,0.1,0.5,1,2), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM3_2 = CV_tuning_SVM2(X = RWR_ind_mat_final[, f_union_RWR_ind], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(cost = c(0.01,0.1,0.5,1,2), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM4_2 = CV_tuning_SVM2(X = SHP_mat_final[, f_union_SHP], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(cost = c(0.01,0.1,0.5,1,2), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM5_2 = CV_tuning_SVM2(X = SHP_inv_mat_final[, f_union_SHP_inv], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(cost = c(0.01,0.1,0.5,1,2), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM6_2 = CV_tuning_SVM2(X = SHP_ind_mat_final[, f_union_SHP_ind], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(cost = c(0.01,0.1,0.5,1,2), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM7_2 = CV_tuning_SVM2(X = TOP_mat_final[, f_union_TOP], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(cost = c(0.01,0.1,0.5,1,2), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM8_2 = CV_tuning_SVM2(X = CLI_mat_final[, f_union_CLI], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(cost = c(0.01,0.1,0.5,1,2), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM9_2 = CV_tuning_SVM2(X = CLU_mat_final[, f_union_CLU], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(cost = c(0.01,0.1,0.5,1,2), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM10_2 = CV_tuning_SVM2(X = SIP_mat_final[, f_union_SIP], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(cost = c(0.01,0.1,0.5,1,2), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM11_2 = CV_tuning_SVM2(X = SIG_mat_final[, f_union_SIG], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(cost = c(0.01,0.1,0.5,1,2), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+SVM12_2 = CV_tuning_SVM2(X = Train, Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(cost = c(0.01,0.1,0.5,1,2), class.weights = list(c("TRUE" = .5, "FALSE" = .5),c("TRUE" = .7, "FALSE" = .3),c("TRUE" = .9, "FALSE" = .1))))
+
+
+SVM1_1[[1]] = rbind(SVM1_1[[1]], SVM1_2[[1]]) %>% arrange(desc(Average))
+SVM2_1[[1]] = rbind(SVM2_1[[1]], SVM2_2[[1]]) %>% arrange(desc(Average))
+SVM3_1[[1]] = rbind(SVM3_1[[1]], SVM3_2[[1]]) %>% arrange(desc(Average))
+SVM4_1[[1]] = rbind(SVM4_1[[1]], SVM4_2[[1]]) %>% arrange(desc(Average))
+SVM5_1[[1]] = rbind(SVM5_1[[1]], SVM5_2[[1]]) %>% arrange(desc(Average))
+SVM6_1[[1]] = rbind(SVM6_1[[1]], SVM6_2[[1]]) %>% arrange(desc(Average))
+SVM7_1[[1]] = rbind(SVM7_1[[1]], SVM7_2[[1]]) %>% arrange(desc(Average))
+SVM8_1[[1]] = rbind(SVM8_1[[1]], SVM8_2[[1]]) %>% arrange(desc(Average))
+SVM9_1[[1]] = rbind(SVM9_1[[1]], SVM9_2[[1]]) %>% arrange(desc(Average))
+SVM10_1[[1]] = rbind(SVM10_1[[1]], SVM10_2[[1]]) %>% arrange(desc(Average))
+SVM11_1[[1]] = rbind(SVM11_1[[1]], SVM11_2[[1]]) %>% arrange(desc(Average))
+SVM12_1[[1]] = rbind(SVM12_1[[1]], SVM12_2[[1]]) %>% arrange(desc(Average))
+
+SVM1_3 = CV_tuning_SVM2(X = RWR_mat_final[, f_union_RWR], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(gamma = signif(2^(4:-12), 3), cost = SVM1_1[[1]]$cost[1], class.weights = SVM1_1[[1]]$class.weights[1]))
+SVM2_3 = CV_tuning_SVM2(X = RWR_inv_mat_final[, f_union_RWR_inv], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(gamma = signif(2^(4:-12), 3), cost = SVM2_1[[1]]$cost[1], class.weights = SVM2_1[[1]]$class.weights[1]))
+SVM3_3 = CV_tuning_SVM2(X = RWR_ind_mat_final[, f_union_RWR_ind], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(gamma = signif(2^(4:-12), 3), cost = SVM3_1[[1]]$cost[1], class.weights = SVM3_1[[1]]$class.weights[1]))
+SVM4_3 = CV_tuning_SVM2(X = SHP_mat_final[, f_union_SHP], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(gamma = signif(2^(4:-12), 3), cost = SVM4_1[[1]]$cost[1], class.weights = SVM4_1[[1]]$class.weights[1]))
+SVM5_3 = CV_tuning_SVM2(X = SHP_inv_mat_final[, f_union_SHP_inv], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(gamma = signif(2^(4:-12), 3), cost = SVM5_1[[1]]$cost[1], class.weights = SVM5_1[[1]]$class.weights[1]))
+SVM6_3 = CV_tuning_SVM2(X = SHP_ind_mat_final[, f_union_SHP_ind], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(gamma = signif(2^(4:-12), 3), cost = SVM6_1[[1]]$cost[1], class.weights = SVM6_1[[1]]$class.weights[1]))
+SVM7_3 = CV_tuning_SVM2(X = TOP_mat_final[, f_union_TOP], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(gamma = signif(2^(4:-12), 3), cost = SVM7_1[[1]]$cost[1], class.weights = SVM7_1[[1]]$class.weights[1]))
+SVM8_3 = CV_tuning_SVM2(X = CLI_mat_final[, f_union_CLI], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(gamma = signif(2^(4:-12), 3), cost = SVM8_1[[1]]$cost[1], class.weights = SVM8_1[[1]]$class.weights[1]))
+SVM9_3 = CV_tuning_SVM2(X = CLU_mat_final[, f_union_CLU], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(gamma = signif(2^(4:-12), 3), cost = SVM9_1[[1]]$cost[1], class.weights = SVM9_1[[1]]$class.weights[1]))
+SVM10_3 = CV_tuning_SVM2(X = SIP_mat_final[, f_union_SIP], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(gamma = signif(2^(4:-12), 3), cost = SVM10_1[[1]]$cost[1], class.weights = SVM10_1[[1]]$class.weights[1]))
+SVM11_3 = CV_tuning_SVM2(X = SIG_mat_final[, f_union_SIG], Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(gamma = signif(2^(4:-12), 3), cost = SVM11_1[[1]]$cost[1], class.weights = SVM11_1[[1]]$class.weights[1]))
+SVM12_3 = CV_tuning_SVM2(X = Train, Y = as.factor(Y), k = 10, repetition = 10, Ncores = 50,parameters = list(gamma = signif(2^(4:-12), 3), cost = SVM12_1[[1]]$cost[1], class.weights = SVM12_1[[1]]$class.weights[1]))
+
+
+SVM1 = e1071::svm(x = RWR_mat_final[, f_union_RWR],         y = as.factor(Y), kernel = "radial", gamma = SVM1_3[[1]]$gamma[1] ,cost = SVM1_3[[1]]$cost[1], class.weights = SVM1_3[[1]]$class.weights[[1]])
+SVM2 = e1071::svm(x = RWR_inv_mat_final[, f_union_RWR_inv], y = as.factor(Y), kernel = "radial", gamma = SVM2_3[[1]]$gamma[1] ,cost = SVM2_3[[1]]$cost[1], class.weights = SVM2_3[[1]]$class.weights[[1]])
+SVM3 = e1071::svm(x = RWR_ind_mat_final[, f_union_RWR_ind], y = as.factor(Y), kernel = "radial", gamma = SVM3_3[[1]]$gamma[1] ,cost = SVM3_3[[1]]$cost[1], class.weights = SVM3_3[[1]]$class.weights[[1]])
+SVM4 = e1071::svm(x = SHP_mat_final[, f_union_SHP],         y = as.factor(Y), kernel = "radial", gamma = SVM4_3[[1]]$gamma[1] ,cost = SVM4_3[[1]]$cost[1], class.weights = SVM4_3[[1]]$class.weights[[1]])
+SVM5 = e1071::svm(x = SHP_inv_mat_final[, f_union_SHP_inv], y = as.factor(Y), kernel = "radial", gamma = SVM5_3[[1]]$gamma[1] ,cost = SVM5_3[[1]]$cost[1], class.weights = SVM5_3[[1]]$class.weights[[1]])
+SVM6 = e1071::svm(x = SHP_ind_mat_final[, f_union_SHP_ind], y = as.factor(Y), kernel = "radial", gamma = SVM6_3[[1]]$gamma[1] ,cost = SVM6_3[[1]]$cost[1], class.weights = SVM6_3[[1]]$class.weights[[1]])
+SVM7 = e1071::svm(x = TOP_mat_final[, f_union_TOP],         y = as.factor(Y), kernel = "radial", gamma = SVM7_3[[1]]$gamma[1] ,cost = SVM7_3[[1]]$cost[1], class.weights = SVM7_3[[1]]$class.weights[[1]])
+SVM8 = e1071::svm(x = CLI_mat_final[, f_union_CLI],         y = as.factor(Y), kernel = "radial", gamma = SVM8_3[[1]]$gamma[1] ,cost = SVM8_3[[1]]$cost[1], class.weights = SVM8_3[[1]]$class.weights[[1]])
+SVM9 = e1071::svm(x = CLU_mat_final[, f_union_CLU],         y = as.factor(Y), kernel = "radial", gamma = SVM9_3[[1]]$gamma[1] ,cost = SVM9_3[[1]]$cost[1], class.weights = SVM9_3[[1]]$class.weights[[1]])
+SVM10 =e1071::svm(x = SIP_mat_final[, f_union_SIP],         y = as.factor(Y), kernel = "radial", gamma = SVM10_3[[1]]$gamma[1],cost = SVM10_3[[1]]$cost[1],class.weights = SVM10_3[[1]]$class.weights[[1]])
+SVM11 =e1071::svm(x = SIG_mat_final[, f_union_SIG],         y = as.factor(Y), kernel = "radial", gamma = SVM11_3[[1]]$gamma[1],cost = SVM11_3[[1]]$cost[1],class.weights = SVM11_3[[1]]$class.weights[[1]])
+SVM12 =e1071::svm(x = Train,                                y = as.factor(Y), kernel = "radial", gamma = SVM12_3[[1]]$gamma[1],cost = SVM12_3[[1]]$cost[1],class.weights = SVM12_3[[1]]$class.weights[[1]])
+
+rownames(Test) = Test_targets
+
+a1= predict(SVM1,  newdata = Test[, f_union_RWR])
+a2= predict(SVM2,  newdata = Test[, f_union_RWR_inv])
+a3= predict(SVM3,  newdata = Test[, f_union_RWR_ind])
+a4= predict(SVM4,  newdata = Test[, f_union_SHP])
+a5= predict(SVM5,  newdata = Test[, f_union_SHP_inv])
+a6= predict(SVM6,  newdata = Test[, f_union_SHP_ind])
+a7= predict(SVM7,  newdata = Test[, f_union_TOP])
+a8= predict(SVM8,  newdata = Test[, f_union_CLI])
+a9= predict(SVM9,  newdata = Test[, f_union_CLU])
+a10= predict(SVM10, newdata = Test[, f_union_SIP])
+a11= predict(SVM11, newdata = Test[, f_union_SIG])
+a12= predict(SVM12, newdata = Test[, colnames(Train)])
+
+
+results_df_svm = td(bind_rows(list(a1,a2,a3,a4,a5,a6,a7,a8,a9,a10,a11,a12)))
+
+Train_MCC.SVM = c(SVM1_3[[1]]$Average[1],SVM2_3[[1]]$Average[1],SVM3_3[[1]]$Average[1],SVM4_3[[1]]$Average[1],SVM5_3[[1]]$Average[1],SVM6_3[[1]]$Average[1],SVM7_3[[1]]$Average[1],SVM8_3[[1]]$Average[1],SVM9_3[[1]]$Average[1],SVM10_3[[1]]$Average[1],SVM11_3[[1]]$Average[1],SVM12_3[[1]]$Average[1])
+Test_MCC.SVM = unname(sapply(results_df_svm, function(x) mcc(actuals = Y.test, preds = as.logical(x))))
+
+save(Train_MCC.SVM,Test_MCC.SVM, file = "final_results_SVM_MCC.rdata")
+```
+
+```{r ANN}
+run_DL = function(train, y, test, y.test){
+  train.h2o = as.h2o(data.frame(y = as.factor(y), train))
+  ML = h2o.deeplearning(y = 1, training_frame = train.h2o, nfolds = 10,
+                        balance_classes = TRUE, single_node_mode = TRUE, force_load_balance = FALSE, reproducible = TRUE, verbose = FALSE,
+                        activation = "RectifierWithDropout", input_dropout_ratio=.1, loss = "CrossEntropy", shuffle_training_data = TRUE,
+                        hidden_dropout_ratios = c(.5,.5,.5,.5), hidden=c(64,64,64,64), epochs = 30, mini_batch_size = 3)
+  test.na = complete.cases(test)
+  test.h2o = as.h2o(test[test.na, ])
+  MCC_train = ML@model$cross_validation_metrics_summary["mcc", "mean"]
+  
+  MCC_test = mcc(preds = as.logical(h2o.predict(ML, test.h2o)$predict), actuals=as.logical(y.test[test.na]))
+  return(c(MCC_train=MCC_train,MCC_test=MCC_test))
+}
+
+ANN1 =  run_DL(RWR_mat_final[,f_union_RWR],         Y, Test[, f_union_RWR],     Y.test)
+ANN2 =  run_DL(RWR_inv_mat_final[,f_union_RWR_inv], Y, Test[, f_union_RWR_inv], Y.test)
+ANN3 =  run_DL(RWR_ind_mat_final[,f_union_RWR_ind], Y, Test[, f_union_RWR_ind], Y.test)
+ANN4 =  run_DL(SHP_mat_final[,f_union_SHP],         Y, Test[, f_union_SHP],     Y.test)
+ANN5 =  run_DL(SHP_inv_mat_final[,f_union_SHP_inv], Y, Test[, f_union_SHP_inv], Y.test)
+ANN6 =  run_DL(SHP_ind_mat_final[,f_union_SHP_ind], Y, Test[, f_union_SHP_ind], Y.test)
+ANN7 =  run_DL(TOP_mat_final[,f_union_TOP],         Y, Test[, f_union_TOP],     Y.test)
+ANN8 =  run_DL(CLI_mat_final[,f_union_CLI],         Y, Test[, f_union_CLI],     Y.test)
+ANN9 =  run_DL(CLU_mat_final[,f_union_CLU],         Y, Test[, f_union_CLU],     Y.test)
+ANN10 = run_DL(SIP_mat_final[,f_union_SIP],         Y, Test[, f_union_SIP],     Y.test)
+ANN11 = run_DL(SIG_mat_final[,f_union_SIG],         Y, Test[, f_union_SIG],     Y.test)
+ANN12 = run_DL(Train,                               Y, Test[, colnames(Train)], Y.test)
+
+ANN_final_results = do.call(rbind, list(ANN1,ANN2,ANN3,ANN4,ANN5,ANN6,ANN7,ANN8,ANN9,ANN10,ANN11,ANN12))
+save(ANN_final_results, file = "ANN_final_results.rdata")
+
+```
+
+```{r create final performance matrices}
+load("final_results_RF_MCC.rdata")
+load("final_results_SVM_MCC.rdata")
+load("final_results_NB_MCC.rdata")
+load("final_results_KNN_MCC.rdata")
+load("ANN_final_results.rdata")
+
+Final_results_ML = data.frame(Train_MCC.RF,Test_MCC.RF,
+                              Train_MCC.SVM,Test_MCC.SVM,
+                              Train_MCC.NB,Test_MCC.NB,
+                              Train.MCC_KNN,Test.MCC_KNN,
+                              ANN_final_results)
+
+Final_results_ML = round(Final_results_ML, 2)
+names(Final_results_ML) = paste0(c("Train.", "Test."), rep(c("RF", "SVM","NB","KNN","ANN"), times = c(2,2,2,2,2)))
+
+Final_results_ML = cbind(Feature = c("ColMeans","RWR","RWR_inv","RWR_ind","SHP","SHP_inv","SHP_ind","TOP","CLI","CLU","SIP","SIG","All"), Final_results_ML)
+
+Train_final_results = Final_results_ML %>% {.[str_detect(colnames(.), "Train")]} %>% {rbind(colMeans(.), .)} %>% round(., 2)
+Test_final_results  = Final_results_ML %>% {.[str_detect(colnames(.), "Test")]}  %>% {rbind(colMeans(.), .)} %>% round(., 2)
+
+Train_final_results = data.frame(Feature = c("ColMeans","RWR","RWR_inv","RWR_ind","SHP","SHP_inv","SHP_ind","TOP","CLI","CLU","SIP","SIG","All"), Test_final_results, RowMeans = rowMeans(Test_final_results))
+Test_final_results = data.frame(Feature = c("ColMeans","RWR","RWR_inv","RWR_ind","SHP","SHP_inv","SHP_ind","TOP","CLI","CLU","SIP","SIG","All"), Test_final_results, RowMeans = rowMeans(Test_final_results))
+
+write_csv(Train_final_results, "Training_MCCs.csv")
+write_csv(Test_final_results, "Testing_MCCs.csv")
+
+```

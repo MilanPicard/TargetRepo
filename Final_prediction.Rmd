@@ -1,0 +1,107 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(igraph)
+library(org.Hs.eg.db)
+library(caret)
+library(mltools)
+library(data.table)
+
+Network = graph_from_data_frame(read_csv("data/Network_edge_list.csv"))
+
+training_datasets = load("XXX_mat_final.rdata")
+test_datasets = load("XXX_mat_test.rdata")
+Test = data.frame(SHP_mat_test,SHP_inv_mat_test,SHP_ind_mat_test,RWR_mat_test,RWR_inv_mat_test,RWR_ind_mat_test,TOP_mat_test,CLI_mat_test,CLU_mat_test,SIP_mat_test,SIG_mat_test)
+
+additional_infor = load("split_information.rds")
+Final_features = read_csv("Extracted_final_features.csv")
+
+f_union_RWR = na.omit(Final_features$RWR)
+f_union_RWR_inv = na.omit(Final_features$RWR_inv)
+f_union_RWR_ind = na.omit(Final_features$RWR_und)
+f_union_SHP = na.omit(Final_features$SHP)
+f_union_SHP_inv = na.omit(Final_features$SHP_inv)
+f_union_SHP_ind = na.omit(Final_features$SHP_ind)
+f_union_TOP = na.omit(Final_features$TOP)
+f_union_CLI = na.omit(Final_features$CLI)
+f_union_CLU = na.omit(Final_features$CLU)
+f_union_SIP = na.omit(Final_features$SiP)
+f_union_SIG = na.omit(Final_features$SiG)
+
+Train = data.frame(SHP_mat_final,SHP_inv_mat_final,SHP_ind_mat_final,RWR_mat_final,RWR_inv_mat_final,RWR_ind_mat_final,TOP_mat_final,CLI_mat_final,CLU_mat_final,SIP_mat_final,SIG_mat_final)
+Train = Train[, na.omit(unname(unlist(Final_features)))]
+Test = Test[, na.omit(unname(unlist(Final_features)))]
+
+na.test = complete.cases(Test)
+Test = Test[na.test, ]
+
+Y = Training_targets_NA %in% positive_class
+Y.test = (Test_targets %in% positive_class)[na.test]
+
+CV = function(class, k = 10, repetition = 5){
+  Training_indexes = replicate(n = repetition, createFolds(y = class, k = k, list = TRUE, returnTrain = TRUE), simplify = FALSE)
+  names(Training_indexes) = paste0("Rep_", 1:repetition)
+  return(Training_indexes)
+}
+
+```
+
+
+```{r Final predicton for similarities and non directed random walks}
+library(kknn)
+
+# Run the ML algorithm on the full dataset (train + test) in cv
+Full_data = rbind(Train, Test)
+Full_Y = c(Y, Y.test)
+Full_label = c(Training_targets_NA, Test_targets[na.test])
+
+# Create indexes for 100 cross validation 10_fold
+set.seed(12345)
+CV_indexes = unlist(CV(class = Full_Y, k = 10, repetition = 100), recursive = FALSE)
+
+# Training models on k-1 folds
+Full_RWR_CV_results = parallel::mclapply(seq_along(CV_indexes), function(i) {print(i);kknn::train.kknn(Y~., data.frame(Y = as.factor(Full_Y[CV_indexes[[i]]]), Full_data[CV_indexes[[i]], f_union_RWR_ind]), kernel = "biweight", ks = 5, distance = 2  )}, mc.cores = 15)
+Full_TOP_CV_results = parallel::mclapply(seq_along(CV_indexes), function(i) {print(i);kknn::train.kknn(Y~., data.frame(Y = as.factor(Full_Y[CV_indexes[[i]]]), Full_data[CV_indexes[[i]], f_union_TOP])     , kernel = "biweight", ks = 5, distance = 1.8)}, mc.cores = 15)
+
+# predicting from remaining 1 folds
+Full_RWR_CV_preds = parallel::mclapply(seq_along(Full_RWR_CV_results), function(i) setNames(as.logical(predict(Full_RWR_CV_results[[i]], Full_data[-CV_indexes[[i]], f_union_RWR_ind])), Full_label[-CV_indexes[[i]]]), mc.cores = 15)
+Full_TOP_CV_preds = parallel::mclapply(seq_along(Full_TOP_CV_results), function(i) setNames(as.logical(predict(Full_TOP_CV_results[[i]], Full_data[-CV_indexes[[i]], f_union_TOP])), Full_label[-CV_indexes[[i]]]), mc.cores = 15)
+
+saveRDS(Full_RWR_CV_preds, "Full_RWR_CV_preds.rds")
+saveRDS(Full_TOP_CV_preds, "Full_TOP_CV_preds.rds")
+
+
+# Take the name predictions and create an understandable dataset
+predicts_to_target = function(predict_results){
+  predict_results = td(bind_rows(predict_results))
+  predict_results = predict_results %>% dplyr::mutate(Target = rownames(.), .before = 1) %>% 
+    pivot_longer(-1) %>% 
+    dplyr::mutate(CV = paste0("CV_",rep(x = 1:100, each=10, times = nbrunique(Target)))) %>% 
+    dplyr::group_by(Target, CV) %>% 
+    dplyr::summarise(CV_value = na.omit(value), CV = unique(CV)) %>% 
+    pivot_wider(names_from = CV, values_from = CV_value) %>% ungroup
+  
+  predict_results = predict_results %>% dplyr::mutate(Actual = Target %in% positive_class, .after = 1) %>% arrange(desc(Actual))
+  pred_target_train_knn = predict_results$Target[rowSums(predict_results[, -c(1,2)]) >= 50]
+  names(pred_target_train_knn) = rowSums(predict_results[, -c(1,2)])[rowSums(predict_results[, -c(1,2)]) >= 50]/100
+  return(list(tableau = predict_results, prediction = pred_target_train_knn))
+}
+
+Full_RWR_CV_predictions = predicts_to_target(readRDS("Full_RWR_CV_preds.rds"))
+Full_TOP_CV_predictions = predicts_to_target(readRDS("Full_TOP_CV_preds.rds"))
+
+Predicted_targets_KNN_Union = mapIds(org.Hs.eg.db, setdiff(c(Full_RWR_CV_predictions$prediction,Full_TOP_CV_predictions$prediction), positive_class) %>% str_remove("Prot_"), "SYMBOL", "UNIPROT")
+Predicted_targets_KNN_Inter = mapIds(org.Hs.eg.db, setdiff(intersect(Full_RWR_CV_predictions$prediction,Full_TOP_CV_predictions$prediction), positive_class) %>% str_remove("Prot_"), "SYMBOL", "UNIPROT")
+
+```
+
+
+
+
+
+
