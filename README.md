@@ -1,8 +1,12 @@
 # TargetRepo
-Target repositioning on advanced prostate cancer using a multi-layer network and machine learning
+Target repositioning on advanced prostate cancer using a multi-layer network and machine learning.
+This is the code and data necessary to reproduce the results presented in the following article.
+
+### To cite
+Picard, Milan, et al. "Target repositioning using multi-layer networks and machine learning: the case of prostate cancer." Computational and Structural Biotechnology Journal (2024). https://doi.org/10.1016/j.csbj.2024.06.012
 
 
-
+### Available functions
 utils.r
 general functions to run the code
 
